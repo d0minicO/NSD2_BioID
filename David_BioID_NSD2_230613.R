@@ -1,11 +1,10 @@
-## script to analyze David's BioID data, and plot a volcano plot
+## script to analyze David's BioID data, plot a volcano plot, do clustering
 
 library(tidyverse)
 library(magrittr)
-library(ggrastr)
-library(ggrepel)
-library(patchwork)
 library(limma)
+library(edgeR)
+library(umap)
 
 #################
 #### OPTIONS ####
@@ -106,8 +105,6 @@ write.table(wide,
             sep="\t")
 
 
-
-
 #######################
 #### NORMALIZATION ####
 #######################
@@ -151,6 +148,8 @@ mat = v$E
 # Check the first few rows and columns of your transformed data
 head(mat)
 
+#mat = log2(mat+1)
+
 
 ##################################################
 #### TEST DIFFERENTIAL ENRICHMENT USING LIMMA ####
@@ -169,7 +168,7 @@ design = model.matrix(~0 + factor(paste(treatments, biological_reps, sep="_")))
 colnames(design) = levels(factor(paste(treatments, biological_reps, sep="_")))
 
 # Correlation between technical replicates
-corfit = duplicateCorrelation(mat, design, block=technical_reps)
+corfit = limma::duplicateCorrelation(mat, design, block=technical_reps)
 
 # Update the design matrix
 fit = lmFit(mat, design, block=technical_reps, correlation=corfit$consensus)
@@ -204,85 +203,124 @@ write.table(results,
 
 
 
-## filter just significant proteins
+## filter just significant proteins by p value
 sig_ints =
   results %>%
-  filter(adj.P.Val<p_thresh & abs_fc>lfc_thresh)
+  filter(adj.P.Val<p_thresh)
 
 
 
+## filter top n proteins in non-normalized table
+mat2 =
+  as.data.frame(mat) %>%
+  rownames_to_column("Gene") %>%
+  filter(Gene %in% sig_ints$Gene) %>%
+  dplyr::select(-Gene) %>%
+  as.matrix()
 
 
-######################
-#### VOLCANO PLOT ####
-######################
-
-to_label = "FBXO22"
-
-
-# set up universal features of the plots
-boxpad = .5
-pointpad = .5
-minlength = .01
-legpos = "bottom"
+########...######.....###...
+##.....##.##....##...##.##..
+##.....##.##........##...##.
+########..##.......##.....##
+##........##.......#########
+##........##....##.##.....##
+##.........######..##.....##
 
 
-## set up label column to use in geom_text_repel
-volc =
-  results %>%
-  mutate(label = if_else(
-    Gene %in% to_label,
-    Gene,
-    "nolabel"
-  ))
+## do the PCA on selected peaks
+pc = prcomp(t(mat2), scale. = T, center=T)
 
-## make minuslogp column
-volc %<>%
-  mutate(minuslogp=-log(adj.P.Val))
-
-## add significance column
-volc %<>%
-  mutate(sig=if_else(adj.P.Val<p_thresh & abs_fc>lfc_thresh,"sig","notsig"))
+## set up values and sample labels to plot using raw ggplot
+pc_vals =
+  pc$x %>%
+  data.frame() %>%
+  rownames_to_column("Sample") %>%
+  separate(Sample,into=c("Condition","rep"),sep="_")
 
 
-# custom volcano plot
-ggplot(volc,aes(logFC, minuslogp, label = label))+
-  geom_hline(yintercept = -log10(p_thresh),linetype="dashed",size=.1)+
-  geom_vline(xintercept = log2(lfc_thresh),linetype="dashed",size=.1)+
-  geom_vline(xintercept = -log2(lfc_thresh),linetype="dashed",size=.1)+
-  geom_point(data=subset(volc, sig!="sig"),alpha=.4,shape=".",colour="gray60")+
-  geom_point(data=subset(volc, sig=="sig"&label=="nolabel"),alpha=.8,shape=".")+
-  geom_point(data=subset(volc, label!="nolabel"),alpha=.95,shape=20,size=.2,colour="red")+
-  # decreased proteins number label
-  #annotate(geom="text", x=label_x_left, y=label_y, label=prot_nums[1,2],color="black",size=1)+
-  # increased proteins number label
-  #annotate(geom="text", x=label_x_right, y=label_y, label=prot_nums[2,2],color="black",size=1)+
-  ggtitle("NSD2 miniTurbo UNC8732")+
-  ylab("-log(p.adj)")+
-  xlab("Log2FC")+
+
+## get the variance explained for each component
+var_explained <- pc$sdev^2/sum(pc$sdev^2)
+
+# plot PC1 and PC2
+pc_vals %>%
+  ggplot(aes(x=PC1,y=PC2,col=Condition))+
+  #geom_point(colour = "black", size = 2,aes(shape=rep)) +
+  geom_point(size=1)+
+  scale_colour_manual(values=c("#0044aaff","#bf0000ff"))+
+  #ggtitle("PCA plot of proteomics","on 455 DEPs")+
+  labs(x=paste0("PC1: ",round(var_explained[1]*100,1),"%"),
+       y=paste0("PC2: ",round(var_explained[2]*100,1),"%")) +
   theme_bw()+
-  theme(
-    panel.grid = element_blank(),
-    panel.border = element_rect(size=.1),
-    axis.ticks = element_line(size=.1),
-    text=element_text(size=5),
-    legend.key.size = unit(5,"mm"),
-    title=element_text(size=2.5),
-    legend.position = "bottom"
-  ) +
-  geom_text_repel(data          = subset(volc, label!="nolabel"),
-                  colour="black",
-                  size          = 1,
-                  box.padding   = boxpad,
-                  point.padding = pointpad,
-                  max.overlaps = 40,
-                  force         = 100,
-                  segment.size  = 0.1,
-                  min.segment.length = minlength,
-                  segment.color = "grey50",
-                  #direction     = "x")
-  )
+  theme(panel.grid=element_blank(),
+        panel.border = element_rect(size=.1),
+        axis.ticks = element_line(size=.1),
+        axis.text = element_text(size=6,colour="black",face="bold"),
+        axis.title = element_text(size=6,colour="black",face="bold"),
+        text=element_text(size=6),
+        legend.key.size = unit(.5,"cm"))
 
-ggsave(paste0(base,"Volcano_NSD2.pdf"),
-       width=1.4,
-       height=1.3)
+
+ggsave(paste0(base,"PCA.pdf"),
+       width=3,
+       height=2)
+
+
+
+
+
+
+
+
+##.....##.##.....##....###....########.
+##.....##.###...###...##.##...##.....##
+##.....##.####.####..##...##..##.....##
+##.....##.##.###.##.##.....##.########.
+##.....##.##.....##.#########.##.......
+##.....##.##.....##.##.....##.##.......
+#######..##.....##.##.....##.##.......
+
+## non transformed data
+
+## change default n_neighbours to allow umap on smaller sample size
+custom.settings = umap.defaults
+custom.settings$n_neighbors = ncol(mat2)-1
+
+
+seed = 3
+set.seed(seed)
+
+#umap = umap::umap(as.matrix(t(mat)))
+
+# custom config needed
+umap = umap::umap(as.matrix(t(mat2)),
+                  config = custom.settings)
+
+scores = 
+  data.frame(umap$layout) %>%
+  rownames_to_column("sample") %>%
+  #mutate(sample=gsub("BioID2_GID4","BioID2-GID4",sample)) %>%
+  separate(sample, into=c("Condition","rep"),sep="_")
+
+
+
+## umap with labelled tissue types
+ggplot(data = scores, aes(x = X1, y = X2)) + 
+  geom_point(aes(colour = Condition),size=1) + 
+  scale_colour_manual(values=c("#0044aaff","#bf0000ff"))+
+  labs(x="UMAP1",y="UMAP2")+
+  scale_x_reverse()+
+  theme_bw() + 
+  theme(panel.grid=element_blank(),
+        panel.border = element_rect(size=.1),
+        axis.ticks = element_line(size=.1),
+        axis.text = element_text(size=6,colour="black",face="bold"),
+        axis.title = element_text(size=6,colour="black",face="bold"),
+        text=element_text(size=6),
+        legend.key.size = unit(.5,"cm"))
+
+
+ggsave(filename=paste0(base,"UMAP.pdf"),
+       width=3,
+       height=2)
