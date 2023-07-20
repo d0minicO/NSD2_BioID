@@ -2,9 +2,11 @@
 
 library(tidyverse)
 library(magrittr)
+library(ggrastr)
+library(ggrepel)
+library(patchwork)
 library(limma)
 library(edgeR)
-library(umap)
 
 #################
 #### OPTIONS ####
@@ -203,14 +205,97 @@ write.table(results,
 
 
 
+######################
+#### VOLCANO PLOT ####
+######################
+
+to_label = 
+  c("FBXO22")
+
+# set up universal features of the plots
+boxpad = .5
+pointpad = .5
+minlength = .01
+legpos = "bottom"
+
+
+## set up label column to use in geom_text_repel
+volc =
+  results %>%
+  mutate(label = if_else(
+    Gene %in% to_label,
+    Gene,
+    "nolabel"
+  ))
+
+## make minuslogp column
+volc %<>%
+  mutate(minuslogp=-log10(adj.P.Val))
+
+## add significance column
+volc %<>%
+  mutate(sig=if_else(adj.P.Val<p_thresh & abs_fc>lfc_thresh,"sig","notsig"))
+
+
+# custom volcano plot
+ggplot(volc,aes(logFC, minuslogp, label = label))+
+  geom_hline(yintercept = -log10(p_thresh),linetype="dashed",size=.1,colour="gray60")+
+  geom_vline(xintercept = log2(lfc_thresh),linetype="dashed",size=.1,colour="gray60")+
+  geom_vline(xintercept = -log2(lfc_thresh),linetype="dashed",size=.1,colour="gray60")+
+  geom_point(data=subset(volc, sig!="sig"),alpha=.4,size=.5,colour="gray60")+
+  geom_point(data=subset(volc, sig=="sig"&label=="nolabel"),alpha=.8,shape=".")+
+  geom_point(data=subset(volc, label!="nolabel"),alpha=.95,shape=20,size=1,colour="red")+
+  # decreased proteins number label
+  #annotate(geom="text", x=label_x_left, y=label_y, label=prot_nums[1,2],color="black",size=1)+
+  # increased proteins number label
+  #annotate(geom="text", x=label_x_right, y=label_y, label=prot_nums[2,2],color="black",size=1)+
+  scale_x_continuous(limits=c(-1,1))+
+  #ggtitle("NSD2 miniTurbo UNC8732")+
+  ylab("-log10(p.adjusted)")+
+  xlab("Log2FC")+
+  theme_bw()+
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(size=.1),
+    axis.title=element_text(size=6,face="bold"),
+    axis.ticks = element_line(size=.1),
+    text=element_text(size=8,face="bold",colour="black"),
+    axis.text=element_text(size=6,face="bold",colour="black"),
+    legend.key.size = unit(5,"mm"),
+    title=element_text(size=2.5),
+    legend.position = "bottom"
+  ) +
+  geom_text_repel(data          = subset(volc, label!="nolabel"),
+                  colour="black",
+                  size          = 2,
+                  box.padding   = boxpad,
+                  point.padding = pointpad,
+                  max.overlaps = 20,
+                  force         = 100,
+                  segment.size  = 0.1,
+                  min.segment.length = minlength,
+                  segment.color = "grey50",
+                  direction     = "x")
+
+ggsave(paste0(base,"Volcano_NSD2.pdf"),
+       width=2,
+       height=1.6)
+
+
+
+
+
+####################
+#### CLUSTERING ####
+####################
+
 ## filter just significant proteins by p value
 sig_ints =
   results %>%
   filter(adj.P.Val<p_thresh)
 
 
-
-## filter top n proteins in non-normalized table
+## keep just those counts
 mat2 =
   as.data.frame(mat) %>%
   rownames_to_column("Gene") %>%
@@ -269,17 +354,13 @@ ggsave(paste0(base,"PCA.pdf"),
 
 
 
-
-
-
-
 ##.....##.##.....##....###....########.
 ##.....##.###...###...##.##...##.....##
 ##.....##.####.####..##...##..##.....##
 ##.....##.##.###.##.##.....##.########.
 ##.....##.##.....##.#########.##.......
 ##.....##.##.....##.##.....##.##.......
-#######..##.....##.##.....##.##.......
+ #######..##.....##.##.....##.##.......
 
 ## non transformed data
 
